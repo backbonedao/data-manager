@@ -1,9 +1,12 @@
-const test = require('brittle')
+const { test, configure } = require('brittle')
 const crypto = require('hypercore-crypto')
 const ram = require('random-access-memory')
-const tmp = require('tmp-promise')
+const os = require('os')
+const path = require('path')
 
 const Corestore = require('..')
+
+configure({ serial: true })
 
 test('basic get with caching', async function (t) {
   const store = new Corestore(ram)
@@ -77,6 +80,44 @@ test('basic replication', async function (t) {
   t.alike(await core4.get(0), Buffer.from('world'))
 })
 
+test('replicating cores created after replication begins', async function (t) {
+  const store1 = new Corestore(ram)
+  const store2 = new Corestore(ram)
+
+  const s = store1.replicate(true, { live: true })
+  s.pipe(store2.replicate(false, { live: true })).pipe(s)
+
+  const core1 = store1.get({ name: 'core-1' })
+  const core2 = store1.get({ name: 'core-2' })
+  await core1.append('hello')
+  await core2.append('world')
+
+  const core3 = store2.get({ key: core1.key })
+  const core4 = store2.get({ key: core2.key })
+
+  t.alike(await core3.get(0), Buffer.from('hello'))
+  t.alike(await core4.get(0), Buffer.from('world'))
+})
+
+test('replicating cores using discovery key hook', async function (t) {
+  const dir = tmpdir()
+  let store1 = new Corestore(dir)
+  const store2 = new Corestore(ram)
+
+  const core = store1.get({ name: 'main' })
+  await core.append('hello')
+  const key = core.key
+
+  await store1.close()
+  store1 = new Corestore(dir)
+
+  const s = store1.replicate(true, { live: true })
+  s.pipe(store2.replicate(false, { live: true })).pipe(s)
+
+  const core2 = store2.get(key)
+  t.alike(await core2.get(0), Buffer.from('hello'))
+})
+
 test('nested namespaces', async function (t) {
   const store = new Corestore(ram)
   const ns1a = store.namespace('ns1').namespace('a')
@@ -102,9 +143,9 @@ test('core uncached when all sessions close', async function (t) {
 })
 
 test('writable core loaded from name userData', async function (t) {
-  const dir = await tmp.dir({ unsafeCleanup: true })
+  const dir = tmpdir()
 
-  let store = new Corestore(dir.path)
+  let store = new Corestore(dir)
   let core = store.get({ name: 'main' })
   await core.ready()
   const key = core.key
@@ -114,7 +155,7 @@ test('writable core loaded from name userData', async function (t) {
   t.is(core.length, 1)
 
   await store.close()
-  store = new Corestore(dir.path)
+  store = new Corestore(dir)
   core = store.get(key)
   await core.ready()
 
@@ -123,23 +164,43 @@ test('writable core loaded from name userData', async function (t) {
   t.is(core.length, 2)
   t.alike(await core.get(0), Buffer.from('hello'))
   t.alike(await core.get(1), Buffer.from('world'))
-
-  await dir.cleanup()
 })
 
 test('storage locking', async function (t) {
-  const dir = await tmp.dir({ unsafeCleanup: true })
+  const dir = tmpdir()
 
-  const store1 = new Corestore(dir.path)
+  const store1 = new Corestore(dir)
   await store1.ready()
 
-  const store2 = new Corestore(dir.path)
+  const store2 = new Corestore(dir)
   try {
     await store2.ready()
     t.fail('dir should have been locked')
   } catch {
     t.pass('dir was locked')
   }
-
-  await dir.cleanup()
 })
+
+test('closing a namespace does not close cores', async function (t) {
+  const store = new Corestore(ram)
+  const ns1 = store.namespace('ns1')
+  const core1 = ns1.get({ name: 'core-1' })
+  const core2 = ns1.get({ name: 'core-2' })
+  await Promise.all([core1.ready(), core2.ready()])
+
+  await ns1.close()
+
+  t.is(store.cores.size, 2)
+  t.not(core1.closed)
+  t.not(core1.closed)
+
+  await store.close()
+
+  t.is(store.cores.size, 0)
+  t.ok(core1.closed)
+  t.ok(core2.closed)
+})
+
+function tmpdir () {
+  return path.join(os.tmpdir(), 'corestore-' + Math.random().toString(16).slice(2))
+}
