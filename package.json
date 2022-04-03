@@ -1,24 +1,35 @@
 {
-  "name": "corestore",
+  "name": "data-manager",
   "version": "6.0.1-alpha.12",
-  "description": "A Hypercore factory that simplifies managing collections of cores.",
+  "description": "core/data-manager",
   "main": "index.js",
   "scripts": {
     "test": "standard && brittle test/*.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hypercore-protocol/corestore.git"
+    "url": "git+https://github.com/backbonedao/data-manager.git"
   },
   "keywords": [
-    "corestore"
+    "data-manager"
   ],
-  "author": "Andrew Osheroff <andrewosh@gmail.com>",
+  "contributors": [
+    {
+      "name": "backbone://dao",
+      "email": "team@backbonedao.com",
+      "url": "https://backbonedao.com"
+    },
+    {
+      "name": "Andrew Osheroff",
+      "email": "andrewosh@gmail.com",
+      "url": "https://andrewosh.com"
+    }
+  ],
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/hypercore-protocol/corestore/issues"
+    "url": "https://github.com/backbonedao/data-manager/issues"
   },
-  "homepage": "https://github.com/hypercore-protocol/corestore#readme",
+  "homepage": "https://github.com/backbonedao/data-manager#readme",
   "devDependencies": {
     "brittle": "^1.6.0",
     "random-access-file": "^2.2.0",
@@ -29,9 +40,9 @@
     "b4a": "^1.3.1",
     "blake2b-universal": "^1.0.1",
     "derive-key": "^1.0.1",
-    "hypercore": "next",
+    "hypercore": "git+https://github.com/backbonedao/data.git",
     "hypercore-crypto": "^3.2.1",
     "safety-catch": "^1.0.1",
-    "sodium-universal": "^3.0.4"
+    "sodium-universal": "^3.1.0"
   }
 }

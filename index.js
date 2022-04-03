@@ -2,12 +2,8 @@ const { EventEmitter } = require('events')
 const safetyCatch = require('safety-catch')
 const crypto = require('hypercore-crypto')
 const sodium = require('sodium-universal')
-<<<<<<< HEAD
-const Hypercore = require('./core')
-=======
 const Hypercore = require('hypercore')
 const b4a = require('b4a')
->>>>>>> 9a05365a92fb3ca5d9b7ffe4c2e6a3acebf8ea02
 
 const KeyManager = require('./lib/keys')
 
