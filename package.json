@@ -31,8 +31,8 @@
   },
   "homepage": "https://github.com/backbonedao/data-manager#readme",
   "devDependencies": {
-    "brittle": "^1.6.0",
-    "random-access-file": "^2.2.0",
+    "brittle": "^2.2.7",
+    "random-access-file": "^2.2.1",
     "random-access-memory": "^4.0.0",
     "standardx": "^7.0.0"
   },
@@ -42,7 +42,7 @@
     "derive-key": "^1.0.1",
     "hypercore": "git+https://github.com/backbonedao/data.git",
     "hypercore-crypto": "^3.2.1",
-    "safety-catch": "^1.0.1",
+    "safety-catch": "^1.0.2",
     "sodium-universal": "^3.1.0"
   }
 }
