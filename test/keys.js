@@ -13,8 +13,8 @@ test('can create hypercore keypairs', async t => {
   const kp1 = await keys.createHypercoreKeyPair('core1')
   const kp2 = await keys.createHypercoreKeyPair('core2')
 
-  t.is(kp1.publicKey.length, 32)
-  t.is(kp2.publicKey.length, 32)
+  t.is(kp1.publicKey.length, 65)
+  t.is(kp2.publicKey.length, 65)
   t.unlike(kp1.publicKey, kp2.publicKey)
 })
 
