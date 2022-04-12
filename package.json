@@ -4,7 +4,7 @@
   "description": "core/data-manager",
   "main": "index.js",
   "scripts": {
-    "test": "standard && brittle test/*.js"
+    "test": "brittle test/*.js"
   },
   "repository": {
     "type": "git",
