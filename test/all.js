@@ -292,7 +292,7 @@ test('keypair auth sign', async function (t) {
 
   const sig = keyPair.auth.sign(message)
 
-  t.is(sig.length, 64)
+  t.is(sig.length, 65)
   t.ok(crypto.verify(message, sig, keyPair.publicKey))
   t.absent(crypto.verify(message, b4a.alloc(64), keyPair.publicKey))
 })
@@ -304,7 +304,7 @@ test('keypair auth verify', async function (t) {
 
   const sig = crypto.sign(message, keyPair.secretKey)
 
-  t.is(sig.length, 64)
+  t.is(sig.length, 65)
   t.ok(keyPair.auth.verify(message, sig))
   t.absent(keyPair.auth.verify(message, b4a.alloc(64)))
 })
