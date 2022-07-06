@@ -3,40 +3,95 @@ const safetyCatch = require('safety-catch')
 const crypto = require('hypercore-crypto')
 const sodium = require('sodium-universal')
 const Hypercore = require('hypercore')
+const Xache = require('xache')
 const b4a = require('b4a')
 
-const KeyManager = require('./lib/keys')
+const [NS] = crypto.namespace('corestore', 1)
+const DEFAULT_NAMESPACE = b4a.alloc(32) // This is meant to be 32 0-bytes
 
 const CORES_DIR = 'cores'
-const PROFILES_DIR = 'profiles'
-const USERDATA_NAME_KEY = '@corestore/name'
-const USERDATA_NAMESPACE_KEY = '@corestore/namespace'
-const DEFAULT_NAMESPACE = generateNamespace('@corestore/default')
+const PRIMARY_KEY_FILE_NAME = 'primary-key'
+const USERDATA_NAME_KEY = 'corestore/name'
+const USERDATA_NAMESPACE_KEY = 'corestore/namespace'
 
 module.exports = class Corestore extends EventEmitter {
   constructor (storage, opts = {}) {
     super()
 
-    this.storage = Hypercore.defaultStorage(storage, { lock: PROFILES_DIR + '/default' })
-
+    this.storage = Hypercore.defaultStorage(storage, { lock: PRIMARY_KEY_FILE_NAME })
     this.cores = opts._cores || new Map()
-    this.keys = opts.keys
+    this.primaryKey = null
+    this.cache = !!opts.cache
 
-    this._namespace = opts._namespace || DEFAULT_NAMESPACE
+    this._keyStorage = null
+    this._primaryKey = opts.primaryKey
+    this._namespace = opts.namespace || DEFAULT_NAMESPACE
     this._replicationStreams = opts._streams || []
+    this._overwrite = opts.overwrite === true
+
     this._streamSessions = opts._streamSessions || new Map()
+    this._sessions = new Set() // sessions for THIS namespace
+
+    this._findingPeersCount = 0
+    this._findingPeers = []
+
+    if (this._namespace.byteLength !== 32) throw new Error('Namespace must be a 32-byte Buffer or Uint8Array')
 
     this._opening = opts._opening ? opts._opening.then(() => this._open()) : this._open()
     this._opening.catch(safetyCatch)
     this.ready = () => this._opening
   }
 
-  async _open () {
-    if (this.keys) {
-      this.keys = await this.keys // opts.keys can be a Promise that resolves to a KeyManager
-    } else {
-      this.keys = await KeyManager.fromStorage(p => this.storage(PROFILES_DIR + '/' + p))
+  findingPeers () {
+    let done = false
+    this._incFindingPeers()
+
+    return () => {
+      if (done) return
+      done = true
+      this._decFindingPeers()
     }
+  }
+
+  _incFindingPeers () {
+    if (++this._findingPeersCount !== 1) return
+
+    for (const core of this._sessions) {
+      this._findingPeers.push(core.findingPeers())
+    }
+  }
+
+  _decFindingPeers () {
+    if (--this._findingPeersCount !== 0) return
+
+    while (this._findingPeers.length > 0) {
+      this._findingPeers.pop()()
+    }
+  }
+
+  async _open () {
+    if (this._primaryKey) {
+      this.primaryKey = await this._primaryKey
+      return this.primaryKey
+    }
+    this._keyStorage = this.storage(PRIMARY_KEY_FILE_NAME)
+    this.primaryKey = await new Promise((resolve, reject) => {
+      this._keyStorage.stat((err, st) => {
+        if (err && err.code !== 'ENOENT') return reject(err)
+        if (err || st.size < 32 || this._overwrite) {
+          const key = crypto.randomBytes(32)
+          return this._keyStorage.write(0, key, err => {
+            if (err) return reject(err)
+            return resolve(key)
+          })
+        }
+        this._keyStorage.read(0, 32, (err, key) => {
+          if (err) return reject(err)
+          return resolve(key)
+        })
+      })
+    })
+    return this.primaryKey
   }
 
   async _generateKeys (opts) {
@@ -58,7 +113,7 @@ module.exports = class Corestore extends EventEmitter {
         discoveryKey: crypto.discoveryKey(opts.publicKey)
       }
     }
-    const { publicKey, auth } = await this.keys.createHypercoreKeyPair(opts.name, this._namespace)
+    const { publicKey, auth } = await this.createKeyPair(opts.name)
     return {
       keyPair: {
         publicKey,
@@ -70,6 +125,7 @@ module.exports = class Corestore extends EventEmitter {
   }
 
   _getPrereadyUserData (core, key) {
+    // Need to manually read the header values before the Hypercore is ready, hence the ugliness.
     for (const { key: savedKey, value } of core.core.header.userData) {
       if (key === savedKey) return value
     }
@@ -81,7 +137,7 @@ module.exports = class Corestore extends EventEmitter {
     if (!name) return
 
     const namespace = this._getPrereadyUserData(core, USERDATA_NAMESPACE_KEY)
-    const { publicKey, auth } = await this.keys.createHypercoreKeyPair(b4a.toString(name), namespace)
+    const { publicKey, auth } = await this.createKeyPair(b4a.toString(name), namespace)
     if (!b4a.equals(publicKey, core.key)) throw new Error('Stored core key does not match the provided name')
 
     // TODO: Should Hypercore expose a helper for this, or should preready return keypair/auth?
@@ -99,10 +155,10 @@ module.exports = class Corestore extends EventEmitter {
     while (this.cores.has(id)) {
       const existing = this.cores.get(id)
       if (existing.opened && !existing.closing) return { from: existing, keyPair, auth }
-      if (!existing.opened) {
-        await existing.ready().catch(safetyCatch)
-      } else if (existing.closing) {
+      if (existing.closing) {
         await existing.close()
+      } else {
+        await existing.ready().catch(safetyCatch)
       }
     }
 
@@ -121,6 +177,7 @@ module.exports = class Corestore extends EventEmitter {
       encryptionKey: opts.encryptionKey || null,
       userData,
       auth,
+      cache: opts.cache,
       createIfMissing: !opts._discoveryKey,
       keyPair: keyPair && keyPair.publicKey
         ? {
@@ -148,13 +205,51 @@ module.exports = class Corestore extends EventEmitter {
     return { from: core, keyPair, auth }
   }
 
+  async createKeyPair (name, namespace = this._namespace) {
+    if (!this.primaryKey) await this._opening
+
+    const keyPair = {
+      publicKey: b4a.allocUnsafe(sodium.crypto_sign_PUBLICKEYBYTES),
+      secretKey: b4a.alloc(sodium.crypto_sign_SECRETKEYBYTES),
+      auth: {
+        sign: (msg) => sign(keyPair, msg),
+        verify: (signable, signature) => {
+          return crypto.verify(signable, signature, keyPair.publicKey)
+        }
+      }
+    }
+
+    const seed = deriveSeed(this.primaryKey, namespace, name)
+    sodium.crypto_sign_seed_keypair(keyPair.publicKey, keyPair.secretKey, seed)
+
+    return keyPair
+  }
+
   get (opts = {}) {
     opts = validateGetOptions(opts)
+
+    if (opts.cache !== false) {
+      opts.cache = opts.cache === true || (this.cache && !opts.cache) ? defaultCache() : opts.cache
+    }
+
     const core = new Hypercore(null, {
       ...opts,
       name: null,
       preload: () => this._preload(opts)
     })
+
+    this._sessions.add(core)
+    if (this._findingPeersCount > 0) {
+      this._findingPeers.push(core.findingPeers())
+    }
+
+    core.once('close', () => {
+      // technically better to also clear _findingPeers if we added it,
+      // but the lifecycle for those are pretty short so prob not worth the complexity
+      // as _decFindingPeers clear them all.
+      this._sessions.delete(core)
+    })
+
     return core
   }
 
@@ -189,20 +284,24 @@ module.exports = class Corestore extends EventEmitter {
   }
 
   namespace (name) {
-    if (!b4a.isBuffer(name)) name = b4a.from(name)
     return new Corestore(this.storage, {
-      _namespace: generateNamespace(this._namespace, name),
+      primaryKey: this._opening.then(() => this.primaryKey),
+      namespace: generateNamespace(this._namespace, name),
+      cache: this.cache,
       _opening: this._opening,
       _cores: this.cores,
       _streams: this._replicationStreams,
-      _streamSessions: this._streamSessions,
-      keys: this._opening.then(() => this.keys)
+      _streamSessions: this._streamSessions
     })
   }
 
   async _close () {
     await this._opening
-    if (!b4a.equals(this._namespace, DEFAULT_NAMESPACE)) return // namespaces should not release resources on close
+    if (!b4a.equals(this._namespace, DEFAULT_NAMESPACE)) {
+      // namespaces should not release resources on close
+      // TODO: Refactor the namespace close logic to actually close sessions with ref counting
+      return
+    }
     const closePromises = []
     for (const core of this.cores.values()) {
       closePromises.push(core.close())
@@ -212,7 +311,13 @@ module.exports = class Corestore extends EventEmitter {
       // Only close streams that were created by the Corestore
       if (!isExternal) stream.destroy()
     }
-    await this.keys.close()
+    if (!this._keyStorage) return
+    await new Promise((resolve, reject) => {
+      this._keyStorage.close(err => {
+        if (err) return reject(err)
+        return resolve(null)
+      })
+    })
   }
 
   close () {
@@ -221,10 +326,11 @@ module.exports = class Corestore extends EventEmitter {
     this._closing.catch(safetyCatch)
     return this._closing
   }
+}
 
-  static createToken () {
-    return KeyManager.createToken()
-  }
+function sign (keyPair, message) {
+  if (!keyPair.secretKey) throw new Error('Invalid key pair')
+  return crypto.sign(message, keyPair.secretKey)
 }
 
 function validateGetOptions (opts) {
@@ -244,12 +350,22 @@ function validateGetOptions (opts) {
   return opts
 }
 
-function generateNamespace (first, second) {
-  if (!b4a.isBuffer(first)) first = b4a.from(first)
-  if (second && !b4a.isBuffer(second)) second = b4a.from(second)
+function generateNamespace (namespace, name) {
+  if (!b4a.isBuffer(name)) name = b4a.from(name)
   const out = b4a.allocUnsafe(32)
-  sodium.crypto_generichash(out, second ? b4a.concat([first, second]) : first)
+  sodium.crypto_generichash_batch(out, [namespace, name])
   return out
+}
+
+function deriveSeed (primaryKey, namespace, name) {
+  if (!b4a.isBuffer(name)) name = b4a.from(name)
+  const out = b4a.alloc(32)
+  sodium.crypto_generichash_batch(out, [NS, namespace, name], primaryKey)
+  return out
+}
+
+function defaultCache () {
+  return new Xache({ maxSize: 65536, maxAge: 0 })
 }
 
 function isStream (s) {

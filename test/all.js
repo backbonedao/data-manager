@@ -1,12 +1,12 @@
-const { test, configure } = require('brittle')
+const test = require('brittle')
 const crypto = require('hypercore-crypto')
 const ram = require('random-access-memory')
 const os = require('os')
 const path = require('path')
+const b4a = require('b4a')
+const sodium = require('sodium-universal')
 
 const Corestore = require('..')
-
-configure({ serial: true })
 
 test('basic get with caching', async function (t) {
   const store = new Corestore(ram)
@@ -166,6 +166,30 @@ test('writable core loaded from name userData', async function (t) {
   t.alike(await core.get(1), Buffer.from('world'))
 })
 
+test('writable core loaded from name and namespace userData', async function (t) {
+  const dir = tmpdir()
+
+  let store = new Corestore(dir)
+  let core = store.namespace('ns1').get({ name: 'main' })
+  await core.ready()
+  const key = core.key
+
+  t.ok(core.writable)
+  await core.append('hello')
+  t.is(core.length, 1)
+
+  await store.close()
+  store = new Corestore(dir)
+  core = store.get(key)
+  await core.ready()
+
+  t.ok(core.writable)
+  await core.append('world')
+  t.is(core.length, 2)
+  t.alike(await core.get(0), Buffer.from('hello'))
+  t.alike(await core.get(1), Buffer.from('world'))
+})
+
 test('storage locking', async function (t) {
   const dir = tmpdir()
 
@@ -201,6 +225,110 @@ test('closing a namespace does not close cores', async function (t) {
   t.ok(core2.closed)
 })
 
+test('findingPeers', async function (t) {
+  t.plan(6)
+
+  const store = new Corestore(ram)
+
+  const ns1 = store.namespace('ns1')
+  const ns2 = store.namespace('ns2')
+
+  const a = ns1.get(Buffer.alloc(32).fill('a'))
+  const b = ns2.get(Buffer.alloc(32).fill('b'))
+
+  const done = ns1.findingPeers()
+
+  let aUpdated = false
+  let bUpdated = false
+  let cUpdated = false
+
+  const c = ns1.get(Buffer.alloc(32).fill('c'))
+
+  a.update().then(function (bool) {
+    aUpdated = true
+  })
+
+  b.update().then(function (bool) {
+    bUpdated = true
+  })
+
+  c.update().then(function (bool) {
+    cUpdated = true
+  })
+
+  await new Promise(resolve => setImmediate(resolve))
+
+  t.is(aUpdated, false)
+  t.is(bUpdated, true)
+  t.is(cUpdated, false)
+
+  done()
+
+  await new Promise(resolve => setImmediate(resolve))
+
+  t.is(aUpdated, true)
+  t.is(bUpdated, true)
+  t.is(cUpdated, true)
+})
+
+test('different primary keys yield different keypairs', async function (t) {
+  const pk1 = randomBytes(32)
+  const pk2 = randomBytes(32)
+  t.unlike(pk1, pk2)
+
+  const store1 = new Corestore(ram, { primaryKey: pk1 })
+  const store2 = new Corestore(ram, { primaryKey: pk2 })
+
+  const kp1 = await store1.createKeyPair('hello')
+  const kp2 = await store2.createKeyPair('hello')
+
+  t.unlike(kp1.publicKey, kp2.publicKey)
+})
+
+test('keypair auth sign', async function (t) {
+  const store = new Corestore(ram)
+  const keyPair = await store.createKeyPair('foo')
+  const message = b4a.from('hello world')
+
+  const sig = keyPair.auth.sign(message)
+
+  t.is(sig.length, 64)
+  t.ok(crypto.verify(message, sig, keyPair.publicKey))
+  t.absent(crypto.verify(message, b4a.alloc(64), keyPair.publicKey))
+})
+
+test('keypair auth verify', async function (t) {
+  const store = new Corestore(ram)
+  const keyPair = await store.createKeyPair('foo')
+  const message = b4a.from('hello world')
+
+  const sig = crypto.sign(message, keyPair.secretKey)
+
+  t.is(sig.length, 64)
+  t.ok(keyPair.auth.verify(message, sig))
+  t.absent(keyPair.auth.verify(message, b4a.alloc(64)))
+})
+
+test('core caching after reopen regression', async function (t) {
+  const store = new Corestore(ram)
+  const core = store.get({ name: 'test-core' })
+  await core.ready()
+
+  core.close()
+  await core.opening
+
+  const core2 = store.get({ name: 'test-core' })
+  await core2.ready()
+
+  t.pass('did not infinite loop')
+})
+
 function tmpdir () {
   return path.join(os.tmpdir(), 'corestore-' + Math.random().toString(16).slice(2))
+}
+
+function randomBytes (n) {
+  const buf = b4a.allocUnsafe(n)
+  sodium.randombytes_buf(buf)
+  return buf
 }

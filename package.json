@@ -1,6 +1,6 @@
 {
   "name": "@backbonedao/data-manager",
-  "version": "6.0.1-alpha.12",
+  "version": "6.0.1-alpha.19",
   "description": "core/data-manager",
   "main": "index.js",
   "scripts": {
@@ -43,6 +43,7 @@
     "hypercore": "github:backbonedao/data",
     "hypercore-crypto": "github:backbonedao/crypto",
     "safety-catch": "^1.0.2",
-    "sodium-universal": "^3.1.0"
+    "sodium-universal": "^3.1.0",
+    "xache": "^1.1.0"
   }
 }
